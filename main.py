@@ -36,11 +36,23 @@ def load_configuration(config_path):
 
 def main():
     parser = argparse.ArgumentParser(description="MT5 Trade Copier")
-    parser.add_argument("--config", default=os.path.join(project_root, "config", "config_dev.json"), help="Path to the configuration file.")
+    parser.add_argument("--config", help="Path to the configuration file. If omitted: uses config_prod.json when packaged, config_dev.json when running from source.")
     args = parser.parse_args()
 
-    # --- 1. Load Configuration ---
-    config_path_to_load = args.config
+    # --- 1. Decide which configuration to load ---
+    if args.config:
+        config_path_to_load = args.config
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)-5.5s]  %(message)s")
+        logging.info(f"User-specified config path provided: {config_path_to_load}")
+    else:
+        if getattr(sys, 'frozen', False):  # Running as packaged executable (PyInstaller)
+            config_path_to_load = os.path.join(project_root, "config", "config_prod.json")
+            logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)-5.5s]  %(message)s")
+            logging.info("No --config provided. Running frozen build -> defaulting to PRODUCTION config_prod.json")
+        else:
+            config_path_to_load = os.path.join(project_root, "config", "config_dev.json")
+            logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)-5.5s]  %(message)s")
+            logging.info("No --config provided. Running from source -> defaulting to DEVELOPMENT config_dev.json")
     
     config = load_configuration(config_path_to_load)
     if config is None:
