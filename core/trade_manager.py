@@ -23,14 +23,9 @@ class TradeManager:
         self.receiver_connectors = []
         for rec_config in config['receivers']:
             if rec_config.get("enabled", True):
-                # Normalize symbol mapping keys (handle mis-typed 'RecieverSymbol')
-                for m in rec_config.get("SymbolMapping", []):
-                    if 'ReceiverSymbol' not in m:
-                        # Common misspelling variants
-                        for alt in ('RecieverSymbol', 'receiverSymbol', 'recieverSymbol'):
-                            if alt in m:
-                                m['ReceiverSymbol'] = m[alt]
-                                break
+                # Default: do not copy SL/TP unless explicitly enabled
+                if "copy_sl_tp" not in rec_config:
+                    rec_config["copy_sl_tp"] = False
                 self.receiver_connectors.append(
                     MT5Connector(rec_config, name=f"Receiver-{rec_config['account']}")
                 )
@@ -507,10 +502,20 @@ class TradeManager:
                     rec_pos_data = receiver_positions_dict.get(rec_ticket)
                     if rec_pos_data:
                         prov_sl, prov_tp = modify_action['prov_sl'], modify_action['prov_tp']
-                        if (abs(prov_sl - rec_pos_data.sl) > 1e-5 and prov_sl != 0.0) or (abs(prov_tp - rec_pos_data.tp) > 1e-5 and prov_tp != 0.0) or (prov_sl == 0.0 and rec_pos_data.sl != 0.0) or (prov_tp == 0.0 and rec_pos_data.tp != 0.0) or (prov_sl != 0.0 and rec_pos_data.sl == 0.0) or (prov_tp != 0.0 and rec_pos_data.tp == 0.0):
-                            logging.info(f"Modifying SL/TP for UID {uid} on {rec_name} (R:{rec_ticket}). New SL:{prov_sl}, TP:{prov_tp}")
-                            rec_conn.modify_position_sltp(rec_ticket, prov_sl, prov_tp)
-                            gui_messages.append({"type": "status", "account": rec_name, "message": f"Modified SL/TP for {rec_ticket} (UID {uid[:8]})"})
+                        # Only copy SL/TP if receiver config says so
+                        if rec_config.get("copy_sl_tp", False):
+                            do_modify = (
+                                (abs(prov_sl - rec_pos_data.sl) > 1e-5 and prov_sl != 0.0) or
+                                (abs(prov_tp - rec_pos_data.tp) > 1e-5 and prov_tp != 0.0) or
+                                (prov_sl == 0.0 and rec_pos_data.sl != 0.0) or
+                                (prov_tp == 0.0 and rec_pos_data.tp != 0.0) or
+                                (prov_sl != 0.0 and rec_pos_data.sl == 0.0) or
+                                (prov_tp != 0.0 and rec_pos_data.tp == 0.0)
+                            )
+                            if do_modify:
+                                logging.info(f"Modifying SL/TP for UID {uid} on {rec_name} (R:{rec_ticket}). New SL:{prov_sl}, TP:{prov_tp}")
+                                rec_conn.modify_position_sltp(rec_ticket, prov_sl, prov_tp)
+                                gui_messages.append({"type": "status", "account": rec_name, "message": f"Modified SL/TP for {rec_ticket} (UID {uid[:8]})"})
 
                 for open_action in actions['open']:
                     prov_pos, uid = open_action['provider_pos'], open_action['uid']
@@ -537,21 +542,11 @@ class TradeManager:
                             logging.info(f"Skipping copy for UID {uid} on {rec_name}: trade type not allowed by config.")
                         continue
                     
-                    # Find mapped receiver symbol (robust to mis-spelled key)
-                    receiver_symbol = prov_pos.symbol
-                    for m in rec_config.get("SymbolMapping", []):
-                        if m.get("ProviderSymbol") == prov_pos.symbol:
-                            if 'ReceiverSymbol' in m:
-                                receiver_symbol = m.get('ReceiverSymbol') or receiver_symbol
-                            elif 'RecieverSymbol' in m:  # fallback misspelling
-                                receiver_symbol = m.get('RecieverSymbol') or receiver_symbol
-                            break
-                    if receiver_symbol != prov_pos.symbol and not self.log_actions_only:
-                        logging.debug(f"Mapping provider symbol {prov_pos.symbol} -> receiver symbol {receiver_symbol} for {rec_name}")
+                    receiver_symbol = next((m.get("ReceiverSymbol", prov_pos.symbol) for m in rec_config.get("SymbolMapping", []) if m.get("ProviderSymbol") == prov_pos.symbol), prov_pos.symbol)
                     rec_symbol_info = rec_conn.get_symbol_info(receiver_symbol)
                     if not rec_symbol_info:
                         logging.error(f"Cannot copy UID {uid} to {rec_name}: Symbol info for {receiver_symbol} not found."); continue
-                    
+
                     final_receiver_volume = normalize_volume(rec_symbol_info, prov_pos.volume * rec_config.get("provider_lot_size_multiplied_by", 1.0))
                     if final_receiver_volume <= 0:
                         logging.warning(f"Skipping copy for UID {uid} to {rec_name}: calculated volume {final_receiver_volume} is zero or less.")
@@ -561,8 +556,16 @@ class TradeManager:
                     self.trade_state[uid]["receivers"][rec_name] = {"ticket": None, "status": "attempted", "last_attempt": time.time()}
                     logging.info(f"Attempting to copy UID {uid} (P:{prov_pos.ticket}) to {rec_name} with volume {final_receiver_volume}")
                     gui_messages.append({"type": "status", "account": rec_name, "message": f"Copying P:{prov_pos.ticket} (UID:{uid[:8]}) Vol:{final_receiver_volume}"})
-                    
-                    open_result = rec_conn.open_trade(symbol=receiver_symbol, lot_size=final_receiver_volume, order_type=prov_pos.type, sl_price=prov_pos.sl, tp_price=prov_pos.tp, deviation_points=rec_config.get("price_deviation_points", 50), magic_number=rec_config.get("magic_number"), comment=f"{prov_pos.ticket}")
+
+                    # Only copy SL/TP if receiver config says so
+                    if rec_config.get("copy_sl_tp", False):
+                        sl_price = prov_pos.sl
+                        tp_price = prov_pos.tp
+                    else:
+                        sl_price = 0.0
+                        tp_price = 0.0
+
+                    open_result = rec_conn.open_trade(symbol=receiver_symbol, lot_size=final_receiver_volume, order_type=prov_pos.type, sl_price=sl_price, tp_price=tp_price, deviation_points=rec_config.get("price_deviation_points", 50), magic_number=rec_config.get("magic_number"), comment=f"{prov_pos.ticket}")
 
                     position_ticket = None
                     if open_result and open_result.get('position_ticket') and open_result['position_ticket'] > 0:
