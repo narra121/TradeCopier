@@ -23,6 +23,14 @@ class TradeManager:
         self.receiver_connectors = []
         for rec_config in config['receivers']:
             if rec_config.get("enabled", True):
+                # Normalize symbol mapping keys (handle mis-typed 'RecieverSymbol')
+                for m in rec_config.get("SymbolMapping", []):
+                    if 'ReceiverSymbol' not in m:
+                        # Common misspelling variants
+                        for alt in ('RecieverSymbol', 'receiverSymbol', 'recieverSymbol'):
+                            if alt in m:
+                                m['ReceiverSymbol'] = m[alt]
+                                break
                 self.receiver_connectors.append(
                     MT5Connector(rec_config, name=f"Receiver-{rec_config['account']}")
                 )
@@ -529,7 +537,17 @@ class TradeManager:
                             logging.info(f"Skipping copy for UID {uid} on {rec_name}: trade type not allowed by config.")
                         continue
                     
-                    receiver_symbol = next((m.get("ReceiverSymbol", prov_pos.symbol) for m in rec_config.get("SymbolMapping", []) if m.get("ProviderSymbol") == prov_pos.symbol), prov_pos.symbol)
+                    # Find mapped receiver symbol (robust to mis-spelled key)
+                    receiver_symbol = prov_pos.symbol
+                    for m in rec_config.get("SymbolMapping", []):
+                        if m.get("ProviderSymbol") == prov_pos.symbol:
+                            if 'ReceiverSymbol' in m:
+                                receiver_symbol = m.get('ReceiverSymbol') or receiver_symbol
+                            elif 'RecieverSymbol' in m:  # fallback misspelling
+                                receiver_symbol = m.get('RecieverSymbol') or receiver_symbol
+                            break
+                    if receiver_symbol != prov_pos.symbol and not self.log_actions_only:
+                        logging.debug(f"Mapping provider symbol {prov_pos.symbol} -> receiver symbol {receiver_symbol} for {rec_name}")
                     rec_symbol_info = rec_conn.get_symbol_info(receiver_symbol)
                     if not rec_symbol_info:
                         logging.error(f"Cannot copy UID {uid} to {rec_name}: Symbol info for {receiver_symbol} not found."); continue

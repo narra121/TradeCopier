@@ -21,7 +21,7 @@
             "exclude_trades_older_than_minutes": 5,
             "copy_buy_trades": true,
             "copy_sell_trades": true,
-            "provider_lot_size_multiplied_by": 2,
+            "provider_lot_size_multiplied_by": 1,
             "enabled": true,
             "SymbolMapping": [
                 {
@@ -29,7 +29,7 @@
                     "RecieverSymbol": "XAUUSD"
                 },
                 {
-                    "ProviderSymbol": "US30",
+                    "ProviderSymbol": "US30m",
                     "RecieverSymbol": "US30"
                 }
             ]
@@ -38,7 +38,7 @@
     "settings": {
         "state_file": "data/trade_copier_state.json",
         "log_file": "logs/app.log",
-        "log_level": "INFO",
+        "log_level": "ERROR",
         "default_processing_interval_ms": 2000,
         "log_max_size_mb": 10,
         "log_max_files": 20,
