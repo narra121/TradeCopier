@@ -108,6 +108,37 @@ class MT5Connector:
                     logging.warning(f"[{self.name}] Wanted to disconnect, but global MT5 context was for a different terminal ({current_terminal.path if current_terminal else 'None'}). Not shutting down.")
             with self.instance_lock:
                 self.is_connected = False
+
+    def terminate_terminal(self):
+        """Attempt to close the underlying terminal process.
+        This uses the configured terminal_path and sends a terminate signal to the process if found.
+        Safe to call multiple times."""
+        exe_path = self.config.get('terminal_path')
+        if not exe_path:
+            return
+        try:
+            import psutil
+        except ImportError:
+            logging.warning(f"[{self.name}] psutil not installed; cannot auto-close terminal process.")
+            return
+        try:
+            exe_norm = os.path.normcase(os.path.abspath(exe_path))
+            for proc in psutil.process_iter(['pid', 'name', 'exe']):
+                try:
+                    p_exe = proc.info.get('exe')
+                    if not p_exe:
+                        continue
+                    if os.path.normcase(p_exe) == exe_norm:
+                        logging.info(f"[{self.name}] Terminating terminal process PID {proc.pid}")
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=5)
+                        except Exception:
+                            pass
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+        except Exception as e:
+            logging.error(f"[{self.name}] Error terminating terminal process: {e}")
     
     def ensure_connection(self):
         """

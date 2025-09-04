@@ -33,11 +33,13 @@ class TradeManager:
         self.running = False
         self.thread = None
         self.lock = threading.RLock() # Use RLock to allow nested lock acquisition by the same thread
-    # Feature flag: duplicate provider trades (open an automatic duplicate on provider when a new manual trade is detected)
+        # Feature flag: duplicate provider trades (open an automatic duplicate on provider when a new manual trade is detected)
         self.duplicate_provider_trades = self.config.get('settings', {}).get('duplicate_provider_trades', False)
         self.duplicate_retry_interval = self.config.get('settings', {}).get('duplicate_retry_interval_seconds', RETRY_INTERVAL_FAILED_COPY)
         # Logging mode: if True, only log actionable trade events (open/close/modify/duplicate/errors)
         self.log_actions_only = self.config.get('settings', {}).get('log_actions_only', False)
+        # Whether to close underlying MT5 terminal processes on shutdown
+        self.auto_close_terminals = self.config.get('settings', {}).get('auto_close_terminals', True)
         if self.log_actions_only:
             logging.info("Actions-only logging mode ENABLED: routine cycle and skip logs suppressed.")
         else:
@@ -142,8 +144,18 @@ class TradeManager:
             self.thread.join(timeout=10) # Wait for the thread to finish
         
         self.provider_connector.disconnect()
+        if self.auto_close_terminals:
+            try:
+                self.provider_connector.terminate_terminal()
+            except Exception as e:
+                logging.error(f"Failed to terminate provider terminal: {e}")
         for rec_conn in self.receiver_connectors:
             rec_conn.disconnect()
+            if self.auto_close_terminals:
+                try:
+                    rec_conn.terminate_terminal()
+                except Exception as e:
+                    logging.error(f"Failed to terminate receiver terminal {rec_conn.name}: {e}")
         
         self.save_trade_state() # Final save
         logging.info("TradeManager stopped.")
