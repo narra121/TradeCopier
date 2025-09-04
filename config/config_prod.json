@@ -1,0 +1,49 @@
+{
+    "provider": {
+        "name": "DemoProvider",
+        "account": 274102342,
+        "password": "Ramula@1234",
+        "server": "Exness-MT5Trial6",
+        "terminal_path": "C:\\Program Files\\DemoProvider1\\terminal64.exe"
+    },
+    "receivers": [
+        
+          {
+            "name": "20KReceiver",
+            "account": 25566507,
+            "password": "fjffTKPK~-17",
+            "server": "FivePercentOnline-Real",
+            "terminal_path": "C:\\Program Files\\Reciever2\\terminal64.exe",
+            "magic_number": 202401,
+            "processing_interval_ms": 500,
+            "price_deviation_points": 50,
+            "copy_trades_in_profit": false,
+            "exclude_trades_older_than_minutes": 5,
+            "copy_buy_trades": true,
+            "copy_sell_trades": true,
+            "provider_lot_size_multiplied_by": 2,
+            "enabled": true,
+            "SymbolMapping": [
+                {
+                    "ProviderSymbol": "XAUUSDm",
+                    "RecieverSymbol": "XAUUSD"
+                },
+                {
+                    "ProviderSymbol": "US30",
+                    "RecieverSymbol": "US30"
+                }
+            ]
+        }
+    ],
+    "settings": {
+        "state_file": "data/trade_copier_state.json",
+        "log_file": "logs/app.log",
+        "log_level": "INFO",
+        "default_processing_interval_ms": 2000,
+        "log_max_size_mb": 10,
+        "log_max_files": 20,
+        "duplicate_provider_trades": true,
+    "duplicate_retry_interval_seconds": 30,
+    "log_actions_only": true
+    }
+}

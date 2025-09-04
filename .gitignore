@@ -1,0 +1,36 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.env/
+.venv/
+venv/
+ENV/
+
+# Logs
+logs/
+*.log
+
+# Build artifacts
+build/
+dist/
+*.spec
+!main.spec
+!TradeCopierApp.spec
+*.exe
+*.pkg
+*.toc
+
+# State / runtime data
+data/trade_copier_state.json
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# PyInstaller caches
+*.pyz
+

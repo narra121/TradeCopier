@@ -1,0 +1,1 @@
+pyinstaller --name TradeCopierApp --noconsole --clean --add-data "config;config" --add-data "data;data" --add-data "logs;logs" --hidden-import MetaTrader5 --hidden-import pandas --hidden-import tkinter.ttk --hidden-import tkinter.scrolledtext --hidden-import queue --hidden-import uuid main.py
