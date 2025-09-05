@@ -17,21 +17,21 @@
             "magic_number": 202401,
             "processing_interval_ms": 500,
             "price_deviation_points": 50,
-            "copy_trades_in_profit": false,
+            "copy_trades_in_profit": true,
             "exclude_trades_older_than_minutes": 5,
             "copy_buy_trades": true,
             "copy_sell_trades": true,
-            "provider_lot_size_multiplied_by": 2,
+            "provider_lot_size_multiplied_by": 1,
             "enabled": true,
             "copy_sl_tp": false,
             "SymbolMapping": [
                 {
                     "ProviderSymbol": "XAUUSDm",
-                    "RecieverSymbol": "XAUUSD"
+                    "ReceiverSymbol": "XAUUSD"
                 },
                 {
                     "ProviderSymbol": "US30m",
-                    "RecieverSymbol": "US30"
+                    "ReceiverSymbol": "US30"
                 }
             ]
         }
@@ -44,7 +44,7 @@
         "log_max_size_mb": 10,
         "log_max_files": 20,
         "duplicate_provider_trades": true,
-    "duplicate_retry_interval_seconds": 30,
+    "duplicate_retry_interval_seconds": 3,
     "log_actions_only": true
     }
 }
