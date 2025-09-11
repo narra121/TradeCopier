@@ -392,6 +392,23 @@ class TradeManager:
                     uid = generate_universal_trade_id()
                     provider_comment = getattr(prov_pos, 'comment', '')
                     is_duplicate = isinstance(provider_comment, str) and provider_comment.startswith(DUPLICATE_COMMENT_PREFIX)
+                    # Calculate SL/TP points (distance from entry price)
+                    provider_open_price = getattr(prov_pos, 'price_open', 0.0)
+                    sl_points = 0.0
+                    tp_points = 0.0
+                    
+                    if prov_pos.sl > 0 and provider_open_price > 0:
+                        if prov_pos.type == 0:  # BUY
+                            sl_points = provider_open_price - prov_pos.sl
+                        else:  # SELL
+                            sl_points = prov_pos.sl - provider_open_price
+                    
+                    if prov_pos.tp > 0 and provider_open_price > 0:
+                        if prov_pos.type == 0:  # BUY
+                            tp_points = prov_pos.tp - provider_open_price
+                        else:  # SELL
+                            tp_points = provider_open_price - prov_pos.tp
+                    
                     self.trade_state[uid] = {
                         "provider_ticket": prov_pos.ticket,
                         "provider_symbol": prov_pos.symbol,
@@ -399,6 +416,9 @@ class TradeManager:
                         "provider_volume": prov_pos.volume,
                         "provider_sl": prov_pos.sl,
                         "provider_tp": prov_pos.tp,
+                        "provider_open_price": provider_open_price,
+                        "provider_sl_points": sl_points,
+                        "provider_tp_points": tp_points,
                         "provider_open_time": prov_pos.time,
                         "provider_comment": provider_comment,
                         "is_duplicate": is_duplicate,
@@ -557,15 +577,8 @@ class TradeManager:
                     logging.info(f"Attempting to copy UID {uid} (P:{prov_pos.ticket}) to {rec_name} with volume {final_receiver_volume}")
                     gui_messages.append({"type": "status", "account": rec_name, "message": f"Copying P:{prov_pos.ticket} (UID:{uid[:8]}) Vol:{final_receiver_volume}"})
 
-                    # Only copy SL/TP if receiver config says so
-                    if rec_config.get("copy_sl_tp", False):
-                        sl_price = prov_pos.sl
-                        tp_price = prov_pos.tp
-                    else:
-                        sl_price = 0.0
-                        tp_price = 0.0
-
-                    open_result = rec_conn.open_trade(symbol=receiver_symbol, lot_size=final_receiver_volume, order_type=prov_pos.type, sl_price=sl_price, tp_price=tp_price, deviation_points=rec_config.get("price_deviation_points", 50), magic_number=rec_config.get("magic_number"), comment=f"{prov_pos.ticket}")
+                    # Always open receiver trade without SL/TP first
+                    open_result = rec_conn.open_trade(symbol=receiver_symbol, lot_size=final_receiver_volume, order_type=prov_pos.type, sl_price=0.0, tp_price=0.0, deviation_points=rec_config.get("price_deviation_points", 50), magic_number=rec_config.get("magic_number"), comment=f"{prov_pos.ticket}")
 
                     position_ticket = None
                     if open_result and open_result.get('position_ticket') and open_result['position_ticket'] > 0:
@@ -575,6 +588,44 @@ class TradeManager:
                         self.trade_state[uid]["receivers"][rec_name] = {"ticket": position_ticket, "status": "copied"}
                         logging.info(f"Successfully copied UID {uid} (P:{prov_pos.ticket}) to {rec_name} as R:{position_ticket}")
                         gui_messages.append({"type": "status", "account": rec_name, "message": f"Copied P:{prov_pos.ticket} to R:{position_ticket}"})
+                        
+                        # Now apply SL/TP if configured and provider has them
+                        if rec_config.get("copy_sl_tp", False):
+                            trade_data = self.trade_state[uid]
+                            sl_points = trade_data.get("provider_sl_points", 0.0)
+                            tp_points = trade_data.get("provider_tp_points", 0.0)
+                            
+                            # Get receiver's actual opening price
+                            rec_conn.ensure_connection()
+                            rec_positions = rec_conn.get_positions(magic=rec_config.get("magic_number"))
+                            receiver_position = next((p for p in rec_positions if p.ticket == position_ticket), None)
+                            
+                            if receiver_position and (sl_points > 0 or tp_points > 0):
+                                receiver_open_price = receiver_position.price_open
+                                new_sl = 0.0
+                                new_tp = 0.0
+                                
+                                if sl_points > 0:
+                                    if prov_pos.type == 0:  # BUY
+                                        new_sl = receiver_open_price - sl_points
+                                    else:  # SELL
+                                        new_sl = receiver_open_price + sl_points
+                                
+                                if tp_points > 0:
+                                    if prov_pos.type == 0:  # BUY
+                                        new_tp = receiver_open_price + tp_points
+                                    else:  # SELL
+                                        new_tp = receiver_open_price - tp_points
+                                
+                                # Apply calculated SL/TP
+                                try:
+                                    rec_conn.modify_position_sltp(position_ticket, new_sl, new_tp)
+                                    logging.info(f"Applied SL/TP to receiver {rec_name} ticket {position_ticket}: SL={new_sl:.5f}, TP={new_tp:.5f} (points: SL={sl_points:.5f}, TP={tp_points:.5f})")
+                                    gui_messages.append({"type": "status", "account": rec_name, "message": f"Applied SL/TP to R:{position_ticket}"})
+                                except Exception as sltp_error:
+                                    logging.error(f"Failed to apply SL/TP to receiver {rec_name} ticket {position_ticket}: {sltp_error}")
+                                    gui_messages.append({"type": "error", "account": rec_name, "message": f"Failed to apply SL/TP to R:{position_ticket}"})
+                        
                     else:
                         error_details = f"Result: {open_result}" if open_result else "Result was None."
                         broker_comment = open_result.get('comment', 'Unknown reason') if open_result else 'Unknown reason'
