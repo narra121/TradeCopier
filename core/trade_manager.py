@@ -384,7 +384,13 @@ class TradeManager:
                     prov_pos_data = provider_positions_dict[provider_ticket]
                     for rec_name, rec_data in trade_entry.get("receivers", {}).items():
                         if rec_name in actions_by_receiver and rec_data.get("status") == "copied":
-                            actions_by_receiver[rec_name]['modify'].append({'rec_ticket': rec_data.get("ticket"), 'prov_sl': prov_pos_data.sl, 'prov_tp': prov_pos_data.tp, 'uid': uid})
+                            actions_by_receiver[rec_name]['modify'].append({
+                                'rec_ticket': rec_data.get("ticket"), 
+                                'prov_sl': prov_pos_data.sl, 
+                                'prov_tp': prov_pos_data.tp, 
+                                'prov_pos_data': prov_pos_data,
+                                'uid': uid
+                            })
 
             for prov_pos in provider_positions:
                 uid = self._get_universal_id_by_provider_ticket(prov_pos.ticket)
@@ -397,6 +403,8 @@ class TradeManager:
                     sl_points = 0.0
                     tp_points = 0.0
                     
+                    logging.info(f"DEBUG: Calculating SL/TP points for ticket {prov_pos.ticket} - open_price={provider_open_price}, sl={prov_pos.sl}, tp={prov_pos.tp}")
+                    
                     if prov_pos.sl > 0 and provider_open_price > 0:
                         if prov_pos.type == 0:  # BUY
                             sl_points = provider_open_price - prov_pos.sl
@@ -408,6 +416,8 @@ class TradeManager:
                             tp_points = prov_pos.tp - provider_open_price
                         else:  # SELL
                             tp_points = provider_open_price - prov_pos.tp
+                    
+                    logging.info(f"DEBUG: Calculated points for ticket {prov_pos.ticket} - sl_points={sl_points}, tp_points={tp_points}")
                     
                     self.trade_state[uid] = {
                         "provider_ticket": prov_pos.ticket,
@@ -522,6 +532,8 @@ class TradeManager:
                     rec_pos_data = receiver_positions_dict.get(rec_ticket)
                     if rec_pos_data:
                         prov_sl, prov_tp = modify_action['prov_sl'], modify_action['prov_tp']
+                        prov_pos_data = modify_action.get('prov_pos_data')
+                        
                         # Only copy SL/TP if receiver config says so
                         if rec_config.get("copy_sl_tp", False):
                             do_modify = (
@@ -533,8 +545,41 @@ class TradeManager:
                                 (prov_tp != 0.0 and rec_pos_data.tp == 0.0)
                             )
                             if do_modify:
-                                logging.info(f"Modifying SL/TP for UID {uid} on {rec_name} (R:{rec_ticket}). New SL:{prov_sl}, TP:{prov_tp}")
-                                rec_conn.modify_position_sltp(rec_ticket, prov_sl, prov_tp)
+                                # Get provider's original entry price and receiver's entry price for points-based calculation
+                                trade_data = self.trade_state.get(uid, {})
+                                provider_open_price = trade_data.get("provider_open_price", 0.0)
+                                provider_type = trade_data.get("provider_type", 0)  # 0=BUY, 1=SELL
+                                receiver_open_price = rec_pos_data.price_open
+                                
+                                # Calculate points-based SL/TP for receiver
+                                new_rec_sl = 0.0
+                                new_rec_tp = 0.0
+                                
+                                # Handle SL modification or removal
+                                if prov_sl > 0 and provider_open_price > 0:
+                                    if provider_type == 0:  # BUY - SL is below entry
+                                        sl_points = provider_open_price - prov_sl
+                                        new_rec_sl = receiver_open_price - sl_points
+                                    else:  # SELL - SL is above entry
+                                        sl_points = prov_sl - provider_open_price
+                                        new_rec_sl = receiver_open_price + sl_points
+                                # If prov_sl is 0, new_rec_sl stays 0 (removes SL)
+                                
+                                # Handle TP modification or removal
+                                if prov_tp > 0 and provider_open_price > 0:
+                                    if provider_type == 0:  # BUY - TP is above entry
+                                        tp_points = prov_tp - provider_open_price
+                                        new_rec_tp = receiver_open_price + tp_points
+                                    else:  # SELL - TP is below entry
+                                        tp_points = provider_open_price - prov_tp
+                                        new_rec_tp = receiver_open_price - tp_points
+                                # If prov_tp is 0, new_rec_tp stays 0 (removes TP)
+                                
+                                logging.info(f"DEBUG: SL/TP modification for UID {uid} on {rec_name} (R:{rec_ticket})")
+                                logging.info(f"DEBUG: Provider prices - open:{provider_open_price}, sl:{prov_sl}, tp:{prov_tp}, type:{provider_type}")
+                                logging.info(f"DEBUG: Receiver prices - open:{receiver_open_price}, calculated_sl:{new_rec_sl}, calculated_tp:{new_rec_tp}")
+                                logging.info(f"Points-based SL/TP modification for UID {uid} on {rec_name} (R:{rec_ticket}). New SL:{new_rec_sl}, TP:{new_rec_tp}")
+                                rec_conn.modify_position_sltp(rec_ticket, new_rec_sl, new_rec_tp)
                                 gui_messages.append({"type": "status", "account": rec_name, "message": f"Modified SL/TP for {rec_ticket} (UID {uid[:8]})"})
 
                 for open_action in actions['open']:
@@ -595,37 +640,47 @@ class TradeManager:
                             sl_points = trade_data.get("provider_sl_points", 0.0)
                             tp_points = trade_data.get("provider_tp_points", 0.0)
                             
+                            logging.info(f"DEBUG: SL/TP copy attempt for UID {uid} - sl_points={sl_points}, tp_points={tp_points}, copy_sl_tp={rec_config.get('copy_sl_tp', False)}")
+                            
                             # Get receiver's actual opening price
                             rec_conn.ensure_connection()
                             rec_positions = rec_conn.get_positions(magic=rec_config.get("magic_number"))
                             receiver_position = next((p for p in rec_positions if p.ticket == position_ticket), None)
                             
-                            if receiver_position and (sl_points > 0 or tp_points > 0):
-                                receiver_open_price = receiver_position.price_open
-                                new_sl = 0.0
-                                new_tp = 0.0
+                            if receiver_position:
+                                logging.info(f"DEBUG: Found receiver position {position_ticket}, open_price={receiver_position.price_open}")
                                 
-                                if sl_points > 0:
-                                    if prov_pos.type == 0:  # BUY
-                                        new_sl = receiver_open_price - sl_points
-                                    else:  # SELL
-                                        new_sl = receiver_open_price + sl_points
-                                
-                                if tp_points > 0:
-                                    if prov_pos.type == 0:  # BUY
-                                        new_tp = receiver_open_price + tp_points
-                                    else:  # SELL
-                                        new_tp = receiver_open_price - tp_points
-                                
-                                # Apply calculated SL/TP
-                                try:
-                                    rec_conn.modify_position_sltp(position_ticket, new_sl, new_tp)
-                                    logging.info(f"Applied SL/TP to receiver {rec_name} ticket {position_ticket}: SL={new_sl:.5f}, TP={new_tp:.5f} (points: SL={sl_points:.5f}, TP={tp_points:.5f})")
-                                    gui_messages.append({"type": "status", "account": rec_name, "message": f"Applied SL/TP to R:{position_ticket}"})
-                                except Exception as sltp_error:
-                                    logging.error(f"Failed to apply SL/TP to receiver {rec_name} ticket {position_ticket}: {sltp_error}")
-                                    gui_messages.append({"type": "error", "account": rec_name, "message": f"Failed to apply SL/TP to R:{position_ticket}"})
-                        
+                                if sl_points > 0 or tp_points > 0:
+                                    receiver_open_price = receiver_position.price_open
+                                    new_sl = 0.0
+                                    new_tp = 0.0
+                                    
+                                    if sl_points > 0:
+                                        if prov_pos.type == 0:  # BUY
+                                            new_sl = receiver_open_price - sl_points
+                                        else:  # SELL
+                                            new_sl = receiver_open_price + sl_points
+                                    
+                                    if tp_points > 0:
+                                        if prov_pos.type == 0:  # BUY
+                                            new_tp = receiver_open_price + tp_points
+                                        else:  # SELL
+                                            new_tp = receiver_open_price - tp_points
+                                    
+                                    logging.info(f"DEBUG: Calculated SL/TP for {position_ticket}: new_sl={new_sl}, new_tp={new_tp}")
+                                    
+                                    # Apply calculated SL/TP
+                                    try:
+                                        rec_conn.modify_position_sltp(position_ticket, new_sl, new_tp)
+                                        logging.info(f"Applied SL/TP to receiver {rec_name} ticket {position_ticket}: SL={new_sl:.5f}, TP={new_tp:.5f} (points: SL={sl_points:.5f}, TP={tp_points:.5f})")
+                                        gui_messages.append({"type": "status", "account": rec_name, "message": f"Applied SL/TP to R:{position_ticket}"})
+                                    except Exception as sltp_error:
+                                        logging.error(f"Failed to apply SL/TP to receiver {rec_name} ticket {position_ticket}: {sltp_error}")
+                                        gui_messages.append({"type": "error", "account": rec_name, "message": f"Failed to apply SL/TP to R:{position_ticket}"})
+                                else:
+                                    logging.info(f"DEBUG: No SL/TP to apply for {position_ticket} - sl_points={sl_points}, tp_points={tp_points}")
+                            else:
+                                logging.error(f"DEBUG: Could not find receiver position {position_ticket} or no SL/TP points to apply")
                     else:
                         error_details = f"Result: {open_result}" if open_result else "Result was None."
                         broker_comment = open_result.get('comment', 'Unknown reason') if open_result else 'Unknown reason'

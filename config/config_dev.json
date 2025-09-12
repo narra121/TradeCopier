@@ -22,7 +22,7 @@
             "copy_sell_trades": true,
             "provider_lot_size_multiplied_by": 4,
             "enabled": true,
-            "copy_sl_tp": false,
+            "copy_sl_tp": true,
             "SymbolMapping": [
                 {
                     "ProviderSymbol": "XAUUSDm",
