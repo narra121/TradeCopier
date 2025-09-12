@@ -39,6 +39,8 @@ class TradeManager:
         # Feature flag: duplicate provider trades (open an automatic duplicate on provider when a new manual trade is detected)
         self.duplicate_provider_trades = self.config.get('settings', {}).get('duplicate_provider_trades', False)
         self.duplicate_retry_interval = self.config.get('settings', {}).get('duplicate_retry_interval_seconds', RETRY_INTERVAL_FAILED_COPY)
+        # Move to breakeven feature
+        self.move_to_breakeven = self.config.get('settings', {}).get('MoveToBreakeven', False)
         # Logging mode: if True, only log actionable trade events (open/close/modify/duplicate/errors)
         self.log_actions_only = self.config.get('settings', {}).get('log_actions_only', False)
         # Whether to close underlying MT5 terminal processes on shutdown
@@ -373,6 +375,11 @@ class TradeManager:
 
                 if provider_ticket and provider_ticket not in provider_open_tickets:
                     logging.info(f"Provider trade {provider_ticket} (UID: {uid}) closed. Scheduling closure on receivers.")
+                    
+                    # Move to breakeven logic: if this was a trade with a duplicate, move the other trade's SL to breakeven
+                    if self.move_to_breakeven:
+                        self._handle_move_to_breakeven(uid, trade_entry, provider_positions_dict)
+                    
                     for rec_name, rec_data in trade_entry.get("receivers", {}).items():
                         if rec_name in actions_by_receiver and rec_data.get("status") == "copied":
                             actions_by_receiver[rec_name]['close'].append({'ticket': rec_data.get("ticket"), 'uid': uid})
@@ -477,9 +484,35 @@ class TradeManager:
                                 logging.error(f"Duplicate for provider ticket {prov_pos.ticket} aborted permanently (retcode {open_result.get('retcode')}). Enable Algo Trading in terminal to allow duplication.")
                                 gui_messages.append({"type": "error", "account": self.provider_connector.name, "message": f"Duplicate aborted (enable Algo Trading) for {prov_pos.ticket}"})
                             if open_result and open_result.get('position_ticket'):
+                                duplicate_ticket = open_result['position_ticket']
                                 trade_entry['duplicate_opened'] = True
-                                logging.info(f"Duplicate provider trade opened: original {prov_pos.ticket} duplicate {open_result['position_ticket']}")
-                                gui_messages.append({"type": "status", "account": self.provider_connector.name, "message": f"Duplicate opened as {open_result['position_ticket']} for {prov_pos.ticket}"})
+                                trade_entry['duplicate_ticket'] = duplicate_ticket
+                                
+                                # Create a separate state entry for the duplicate trade with reference to original
+                                duplicate_uid = generate_universal_trade_id()
+                                self.trade_state[duplicate_uid] = {
+                                    "provider_ticket": duplicate_ticket,
+                                    "provider_symbol": prov_pos.symbol,
+                                    "provider_type": prov_pos.type,
+                                    "provider_volume": prov_pos.volume,
+                                    "provider_sl": prov_pos.sl,
+                                    "provider_tp": prov_pos.tp,
+                                    "provider_open_price": getattr(prov_pos, 'price_open', 0.0),
+                                    "provider_sl_points": 0.0,  # Will be calculated when SL is set
+                                    "provider_tp_points": 0.0,  # Will be calculated when TP is set
+                                    "provider_open_time": prov_pos.time,
+                                    "provider_comment": f"{DUPLICATE_COMMENT_PREFIX}{prov_pos.ticket}",
+                                    "is_duplicate": True,
+                                    "original_trade_uid": uid,  # Reference to original trade
+                                    "original_trade_ticket": prov_pos.ticket,
+                                    "duplicate_opened": False,
+                                    "duplicate_attempt_time": 0,
+                                    "receivers": {},
+                                    "manually_closed": False
+                                }
+                                
+                                logging.info(f"Duplicate provider trade opened: original {prov_pos.ticket} (UID {uid}) duplicate {duplicate_ticket} (UID {duplicate_uid})")
+                                gui_messages.append({"type": "status", "account": self.provider_connector.name, "message": f"Duplicate opened as {duplicate_ticket} for {prov_pos.ticket}"})
                             else:
                                 if not trade_entry.get('duplicate_permanent_failure'):
                                     logging.error(f"Failed to open duplicate for provider trade {prov_pos.ticket}. Will retry after {self.duplicate_retry_interval}s.")
@@ -700,6 +733,72 @@ class TradeManager:
             self.save_trade_state()
             logging.debug("Synchronization cycle finished.")
         return gui_messages
+
+    def _handle_move_to_breakeven(self, closed_uid, closed_trade_entry, provider_positions_dict):
+        """
+        Handles moving the related trade's SL to breakeven when one trade closes.
+        This works for both original trades (moves duplicate to breakeven) and 
+        duplicate trades (moves original to breakeven).
+        """
+        try:
+            related_uid = None
+            related_ticket = None
+            
+            # If this was an original trade, find its duplicate
+            if not closed_trade_entry.get('is_duplicate', False) and closed_trade_entry.get('duplicate_ticket'):
+                related_ticket = closed_trade_entry.get('duplicate_ticket')
+                # Find the UID for the duplicate trade
+                for uid, trade_data in self.trade_state.items():
+                    if trade_data.get('provider_ticket') == related_ticket:
+                        related_uid = uid
+                        break
+            
+            # If this was a duplicate trade, find its original
+            elif closed_trade_entry.get('is_duplicate', False) and closed_trade_entry.get('original_trade_uid'):
+                related_uid = closed_trade_entry.get('original_trade_uid')
+                related_ticket = closed_trade_entry.get('original_trade_ticket')
+            
+            if not related_uid or not related_ticket:
+                logging.debug(f"No related trade found for breakeven move (closed UID: {closed_uid})")
+                return
+            
+            # Check if the related trade is still open
+            if related_ticket not in provider_positions_dict:
+                logging.debug(f"Related trade {related_ticket} (UID: {related_uid}) already closed, no breakeven move needed")
+                return
+            
+            related_position = provider_positions_dict[related_ticket]
+            related_trade_data = self.trade_state.get(related_uid, {})
+            
+            # Get the entry price for breakeven calculation
+            entry_price = related_trade_data.get('provider_open_price', related_position.price_open)
+            
+            if entry_price <= 0:
+                logging.warning(f"Cannot move to breakeven for ticket {related_ticket}: invalid entry price {entry_price}")
+                return
+            
+            # Check if SL is already at breakeven (avoid unnecessary modifications)
+            current_sl = related_position.sl
+            if abs(current_sl - entry_price) < 1e-5:
+                logging.debug(f"SL for ticket {related_ticket} already at breakeven ({entry_price})")
+                return
+            
+            # Move SL to breakeven (entry price)
+            logging.info(f"Moving trade {related_ticket} (UID: {related_uid}) SL to breakeven: {entry_price}")
+            
+            try:
+                self.provider_connector.modify_position_sltp(related_ticket, entry_price, related_position.tp)
+                logging.info(f"Successfully moved SL to breakeven for ticket {related_ticket}: SL={entry_price:.5f}")
+                
+                # Update the stored trade data with new SL points (should be 0 since SL = entry)
+                related_trade_data['provider_sl'] = entry_price
+                related_trade_data['provider_sl_points'] = 0.0  # Breakeven means 0 points from entry
+                
+            except Exception as modify_error:
+                logging.error(f"Failed to move SL to breakeven for ticket {related_ticket}: {modify_error}")
+                
+        except Exception as e:
+            logging.error(f"Error in move to breakeven logic: {e}")
 
     def _send_open_trades_to_gui(self):
         """Prepares a snapshot of all tracked trades and returns it as a single GUI message."""

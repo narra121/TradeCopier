@@ -35,11 +35,12 @@
         "state_file": "data/trade_copier_state.json",
         "log_file": "logs/app.log",
         "log_level": "INFO",
-    "default_processing_interval_ms": 1000,
-    "log_max_size_mb": 10,
-    "log_max_files": 20,
-    "duplicate_provider_trades": true,
-    "duplicate_retry_interval_seconds": 30,
-    "log_actions_only": true
+        "default_processing_interval_ms": 1000,
+        "log_max_size_mb": 10,
+        "log_max_files": 20,
+        "duplicate_provider_trades": true,
+        "duplicate_retry_interval_seconds": 30,
+        "log_actions_only": true,
+        "MoveToBreakeven": true
     }
 }

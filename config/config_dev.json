@@ -42,7 +42,8 @@
         "log_max_size_mb": 10,
         "log_max_files": 20,
         "duplicate_provider_trades": true,
-    "duplicate_retry_interval_seconds": 30,
-    "log_actions_only": true
+        "duplicate_retry_interval_seconds": 30,
+        "log_actions_only": true,
+        "MoveToBreakeven": true
     }
 }
